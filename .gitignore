@@ -1,0 +1,32 @@
+# Build
+build/
+build-*/
+*.o
+*.a
+*.so
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Qt
+*.moc
+moc_*.cpp
+qrc_*.cpp
+ui_*.h
+*.pro.user
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Dados locais (nunca versionados)
+*.enc
+*.json
+
+# OS
+.DS_Store
+Thumbs.db
