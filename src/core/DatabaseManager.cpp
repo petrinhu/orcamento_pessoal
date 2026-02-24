@@ -1,15 +1,27 @@
 #include "core/DatabaseManager.h"
+#include "core/CryptoHelper.h"
 
+#include <QCoreApplication>
 #include <QDebug>
+#include <QDir>
+#include <QFile>
+#include <QRegularExpression>
 #include <QSqlError>
 #include <QSqlQuery>
 
-// Categorias padrão semeadas na primeira execução
 static const QStringList CATEGORIAS_PADRAO = {
     "Aluguel/Moradia", "Internet", "Luz/Água/Gás", "Transporte",
     "Alimentação", "Educação", "Saúde", "Streaming/TV/Telefone",
     "Academia", "Outros", "Crédito"
 };
+
+static QString sanitizarNome(const QString &nome)
+{
+    QString s = nome.trimmed().toLower();
+    s.replace(' ', '_');
+    s.remove(QRegularExpression("[^a-z0-9_]"));
+    return s.isEmpty() ? "usuario" : s.left(50);
+}
 
 // ── Singleton ─────────────────────────────────────────────────────────────────
 
@@ -21,32 +33,118 @@ DatabaseManager &DatabaseManager::instance()
 
 // ── Conexão ───────────────────────────────────────────────────────────────────
 
-bool DatabaseManager::conectar(const QString &host, int porta, const QString &banco,
-                               const QString &usuario, const QString &senha)
+bool DatabaseManager::conectar(const QString &nome, const QString &senha)
 {
-    m_db = QSqlDatabase::addDatabase("QMYSQL");
-    m_db.setHostName(host);
-    m_db.setPort(porta);
-    m_db.setDatabaseName(banco);
-    m_db.setUserName(usuario);
-    m_db.setPassword(senha);
+    m_senha = senha;
 
+    const QString appDir  = QCoreApplication::applicationDirPath();
+    const QString dataDir = appDir + "/data";
+    QDir().mkpath(dataDir);
+
+    const QString slug = sanitizarNome(nome);
+    m_arquivoEnc = dataDir + "/" + slug + ".enc";
+    m_arquivoTmp = dataDir + "/." + slug + ".db";
+
+    // Usuário existente: decripta o arquivo
+    if (QFile::exists(m_arquivoEnc)) {
+        if (!decriptarParaTemp()) {
+            qDebug() << "DatabaseManager: senha incorreta ou arquivo corrompido";
+            return false;
+        }
+    }
+    // Novo usuário: arquivo temporário vazio será criado pelo SQLite
+
+    m_db = QSqlDatabase::addDatabase("QSQLITE", "main");
+    m_db.setDatabaseName(m_arquivoTmp);
     if (!m_db.open()) {
-        qDebug() << "DatabaseManager: falha na conexão:" << m_db.lastError().text();
+        qDebug() << "DatabaseManager: erro ao abrir SQLite:" << m_db.lastError().text();
         return false;
     }
-    return criarEsquema();
+
+    QSqlQuery q(m_db);
+    q.exec("PRAGMA foreign_keys = ON");
+    q.exec("PRAGMA journal_mode = MEMORY");  // sem arquivos de journal em disco
+    q.exec("PRAGMA synchronous = NORMAL");
+
+    if (!criarEsquema()) return false;
+
+    // Primeiro acesso: gera o .enc inicial
+    if (!QFile::exists(m_arquivoEnc))
+        salvarEEncriptar();
+
+    // Garante limpeza ao fechar o app
+    QObject::connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
+                     [this]() { desconectar(); });
+
+    return true;
 }
 
 void DatabaseManager::desconectar()
 {
-    if (m_db.isOpen())
-        m_db.close();
+    if (!m_db.isOpen()) return;
+    m_db.close();
+    QSqlDatabase::removeDatabase("main");
+    salvarEEncriptar();
+    QFile::remove(m_arquivoTmp);
 }
 
 bool DatabaseManager::isConectado() const
 {
     return m_db.isOpen();
+}
+
+// ── Cripto ────────────────────────────────────────────────────────────────────
+
+bool DatabaseManager::decriptarParaTemp()
+{
+    QFile enc(m_arquivoEnc);
+    if (!enc.open(QIODevice::ReadOnly)) return false;
+    const QByteArray dados = enc.readAll();
+    enc.close();
+
+    if (dados.size() <= CryptoHelper::SALT_LENGTH) return false;
+
+    const QByteArray salt       = dados.left(CryptoHelper::SALT_LENGTH);
+    const QByteArray ciphertext = dados.mid(CryptoHelper::SALT_LENGTH);
+
+    QByteArray chave, iv;
+    if (!CryptoHelper::derivarChaveEIV(salt, m_senha, chave, iv)) return false;
+
+    const QByteArray plaintext = CryptoHelper::decrypt(ciphertext, chave, iv);
+    if (plaintext.isEmpty()) return false;
+
+    QFile tmp(m_arquivoTmp);
+    if (!tmp.open(QIODevice::WriteOnly)) return false;
+    tmp.write(plaintext);
+    tmp.close();
+    return true;
+}
+
+bool DatabaseManager::salvarEEncriptar()
+{
+    QFile tmp(m_arquivoTmp);
+    if (!tmp.open(QIODevice::ReadOnly)) return false;
+    const QByteArray dbData = tmp.readAll();
+    tmp.close();
+    if (dbData.isEmpty()) return false;
+
+    const QByteArray salt = CryptoHelper::gerarSalt();
+    QByteArray chave, iv;
+    if (!CryptoHelper::derivarChaveEIV(salt, m_senha, chave, iv)) return false;
+
+    const QByteArray encrypted = CryptoHelper::encrypt(dbData, chave, iv);
+    if (encrypted.isEmpty()) return false;
+
+    // Escrita atômica: .new → rename
+    const QString encNew = m_arquivoEnc + ".new";
+    QFile enc(encNew);
+    if (!enc.open(QIODevice::WriteOnly)) return false;
+    enc.write(salt);
+    enc.write(encrypted);
+    enc.close();
+
+    QFile::remove(m_arquivoEnc);
+    return QFile::rename(encNew, m_arquivoEnc);
 }
 
 // ── Esquema ───────────────────────────────────────────────────────────────────
@@ -57,43 +155,43 @@ bool DatabaseManager::criarEsquema()
 
     bool ok = q.exec(
         "CREATE TABLE IF NOT EXISTS categorias ("
-        "  id   INT AUTO_INCREMENT PRIMARY KEY,"
-        "  nome VARCHAR(100) NOT NULL UNIQUE"
-        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        "  id   INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  nome TEXT NOT NULL UNIQUE"
+        ")"
     );
     if (!ok) { qDebug() << "criarEsquema categorias:" << q.lastError().text(); return false; }
 
     ok = q.exec(
         "CREATE TABLE IF NOT EXISTS entradas ("
-        "  id             INT AUTO_INCREMENT PRIMARY KEY,"
-        "  origem         VARCHAR(200) NOT NULL DEFAULT '',"
-        "  valor_centavos BIGINT       NOT NULL DEFAULT 0,"
-        "  data           DATE         NOT NULL"
-        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        "  id             INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  origem         TEXT    NOT NULL DEFAULT '',"
+        "  valor_centavos INTEGER NOT NULL DEFAULT 0,"
+        "  data           TEXT    NOT NULL"
+        ")"
     );
     if (!ok) { qDebug() << "criarEsquema entradas:" << q.lastError().text(); return false; }
 
     ok = q.exec(
         "CREATE TABLE IF NOT EXISTS gastos_fixos ("
-        "  id             INT AUTO_INCREMENT PRIMARY KEY,"
-        "  historico      VARCHAR(200) NOT NULL DEFAULT '',"
-        "  valor_centavos BIGINT       NOT NULL DEFAULT 0,"
-        "  data           DATE         NOT NULL,"
-        "  categoria_id   INT          NOT NULL,"
-        "  FOREIGN KEY (categoria_id) REFERENCES categorias(id)"
-        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        "  id             INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  historico      TEXT    NOT NULL DEFAULT '',"
+        "  valor_centavos INTEGER NOT NULL DEFAULT 0,"
+        "  data           TEXT    NOT NULL,"
+        "  categoria_id   INTEGER NOT NULL,"
+        "  FOREIGN KEY (categoria_id) REFERENCES categorias(id) ON DELETE CASCADE"
+        ")"
     );
     if (!ok) { qDebug() << "criarEsquema gastos_fixos:" << q.lastError().text(); return false; }
 
     ok = q.exec(
         "CREATE TABLE IF NOT EXISTS gastos_variaveis ("
-        "  id             INT AUTO_INCREMENT PRIMARY KEY,"
-        "  historico      VARCHAR(200) NOT NULL DEFAULT '',"
-        "  valor_centavos BIGINT       NOT NULL DEFAULT 0,"
-        "  data           DATE         NOT NULL,"
-        "  categoria_id   INT          NOT NULL,"
-        "  FOREIGN KEY (categoria_id) REFERENCES categorias(id)"
-        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        "  id             INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  historico      TEXT    NOT NULL DEFAULT '',"
+        "  valor_centavos INTEGER NOT NULL DEFAULT 0,"
+        "  data           TEXT    NOT NULL,"
+        "  categoria_id   INTEGER NOT NULL,"
+        "  FOREIGN KEY (categoria_id) REFERENCES categorias(id) ON DELETE CASCADE"
+        ")"
     );
     if (!ok) { qDebug() << "criarEsquema gastos_variaveis:" << q.lastError().text(); return false; }
 
@@ -117,9 +215,8 @@ QList<Categoria> DatabaseManager::listarCategorias()
     QList<Categoria> lista;
     QSqlQuery q(m_db);
     q.exec("SELECT id, nome FROM categorias ORDER BY nome");
-    while (q.next()) {
+    while (q.next())
         lista.append({q.value(0).toInt(), q.value(1).toString()});
-    }
     return lista;
 }
 
@@ -128,11 +225,9 @@ bool DatabaseManager::inserirCategoria(Categoria &cat)
     QSqlQuery q(m_db);
     q.prepare("INSERT INTO categorias (nome) VALUES (:nome)");
     q.bindValue(":nome", cat.nome);
-    if (!q.exec()) {
-        qDebug() << "inserirCategoria:" << q.lastError().text();
-        return false;
-    }
+    if (!q.exec()) { qDebug() << "inserirCategoria:" << q.lastError().text(); return false; }
     cat.id = q.lastInsertId().toInt();
+    salvarEEncriptar();
     return true;
 }
 
@@ -141,10 +236,8 @@ bool DatabaseManager::removerCategoria(int id)
     QSqlQuery q(m_db);
     q.prepare("DELETE FROM categorias WHERE id = :id");
     q.bindValue(":id", id);
-    if (!q.exec()) {
-        qDebug() << "removerCategoria:" << q.lastError().text();
-        return false;
-    }
+    if (!q.exec()) { qDebug() << "removerCategoria:" << q.lastError().text(); return false; }
+    salvarEEncriptar();
     return true;
 }
 
@@ -160,7 +253,7 @@ QList<Entrada> DatabaseManager::listarEntradas()
         e.id            = q.value(0).toInt();
         e.origem        = q.value(1).toString();
         e.valorCentavos = q.value(2).toLongLong();
-        e.data          = q.value(3).toDate();
+        e.data          = QDate::fromString(q.value(3).toString(), "yyyy-MM-dd");
         lista.append(e);
     }
     return lista;
@@ -169,55 +262,43 @@ QList<Entrada> DatabaseManager::listarEntradas()
 bool DatabaseManager::inserirEntrada(Entrada &entrada)
 {
     QSqlQuery q(m_db);
-    q.prepare(
-        "INSERT INTO entradas (origem, valor_centavos, data)"
-        " VALUES (:origem, :valor, :data)"
-    );
-    q.bindValue(":origem", entrada.origem);
-    q.bindValue(":valor",  entrada.valorCentavos);
-    q.bindValue(":data",   entrada.data.toString("yyyy-MM-dd"));
-    if (!q.exec()) {
-        qDebug() << "inserirEntrada:" << q.lastError().text();
-        return false;
-    }
+    q.prepare("INSERT INTO entradas (origem, valor_centavos, data) VALUES (:o, :v, :d)");
+    q.bindValue(":o", entrada.origem);
+    q.bindValue(":v", entrada.valorCentavos);
+    q.bindValue(":d", entrada.data.toString("yyyy-MM-dd"));
+    if (!q.exec()) { qDebug() << "inserirEntrada:" << q.lastError().text(); return false; }
     entrada.id = q.lastInsertId().toInt();
+    salvarEEncriptar();
     return true;
 }
 
 bool DatabaseManager::atualizarEntrada(const Entrada &entrada)
 {
     QSqlQuery q(m_db);
-    q.prepare(
-        "UPDATE entradas SET origem = :origem, valor_centavos = :valor, data = :data"
-        " WHERE id = :id"
-    );
-    q.bindValue(":origem", entrada.origem);
-    q.bindValue(":valor",  entrada.valorCentavos);
-    q.bindValue(":data",   entrada.data.toString("yyyy-MM-dd"));
-    q.bindValue(":id",     entrada.id);
-    if (!q.exec()) {
-        qDebug() << "atualizarEntrada:" << q.lastError().text();
-        return false;
-    }
+    q.prepare("UPDATE entradas SET origem=:o, valor_centavos=:v, data=:d WHERE id=:id");
+    q.bindValue(":o",  entrada.origem);
+    q.bindValue(":v",  entrada.valorCentavos);
+    q.bindValue(":d",  entrada.data.toString("yyyy-MM-dd"));
+    q.bindValue(":id", entrada.id);
+    if (!q.exec()) { qDebug() << "atualizarEntrada:" << q.lastError().text(); return false; }
+    salvarEEncriptar();
     return true;
 }
 
 bool DatabaseManager::removerEntrada(int id)
 {
     QSqlQuery q(m_db);
-    q.prepare("DELETE FROM entradas WHERE id = :id");
+    q.prepare("DELETE FROM entradas WHERE id=:id");
     q.bindValue(":id", id);
-    if (!q.exec()) {
-        qDebug() << "removerEntrada:" << q.lastError().text();
-        return false;
-    }
+    if (!q.exec()) { qDebug() << "removerEntrada:" << q.lastError().text(); return false; }
+    salvarEEncriptar();
     return true;
 }
 
 qint64 DatabaseManager::totalEntradas()
 {
     QSqlQuery q(m_db);
-    q.exec("SELECT COALESCE(SUM(valor_centavos), 0) FROM entradas");
+    q.exec("SELECT COALESCE(SUM(valor_centavos),0) FROM entradas");
     return q.next() ? q.value(0).toLongLong() : 0;
 }
 
@@ -239,7 +320,7 @@ QList<GastoFixo> DatabaseManager::listarGastosFixos()
         g.id            = q.value(0).toInt();
         g.historico     = q.value(1).toString();
         g.valorCentavos = q.value(2).toLongLong();
-        g.data          = q.value(3).toDate();
+        g.data          = QDate::fromString(q.value(3).toString(), "yyyy-MM-dd");
         g.categoriaId   = q.value(4).toInt();
         g.categoriaNome = q.value(5).toString();
         lista.append(g);
@@ -250,58 +331,47 @@ QList<GastoFixo> DatabaseManager::listarGastosFixos()
 bool DatabaseManager::inserirGastoFixo(GastoFixo &gasto)
 {
     QSqlQuery q(m_db);
-    q.prepare(
-        "INSERT INTO gastos_fixos (historico, valor_centavos, data, categoria_id)"
-        " VALUES (:hist, :valor, :data, :catId)"
-    );
-    q.bindValue(":hist",  gasto.historico);
-    q.bindValue(":valor", gasto.valorCentavos);
-    q.bindValue(":data",  gasto.data.toString("yyyy-MM-dd"));
-    q.bindValue(":catId", gasto.categoriaId);
-    if (!q.exec()) {
-        qDebug() << "inserirGastoFixo:" << q.lastError().text();
-        return false;
-    }
+    q.prepare("INSERT INTO gastos_fixos (historico,valor_centavos,data,categoria_id)"
+              " VALUES (:h,:v,:d,:c)");
+    q.bindValue(":h", gasto.historico);
+    q.bindValue(":v", gasto.valorCentavos);
+    q.bindValue(":d", gasto.data.toString("yyyy-MM-dd"));
+    q.bindValue(":c", gasto.categoriaId);
+    if (!q.exec()) { qDebug() << "inserirGastoFixo:" << q.lastError().text(); return false; }
     gasto.id = q.lastInsertId().toInt();
+    salvarEEncriptar();
     return true;
 }
 
 bool DatabaseManager::atualizarGastoFixo(const GastoFixo &gasto)
 {
     QSqlQuery q(m_db);
-    q.prepare(
-        "UPDATE gastos_fixos"
-        " SET historico = :hist, valor_centavos = :valor, data = :data, categoria_id = :catId"
-        " WHERE id = :id"
-    );
-    q.bindValue(":hist",  gasto.historico);
-    q.bindValue(":valor", gasto.valorCentavos);
-    q.bindValue(":data",  gasto.data.toString("yyyy-MM-dd"));
-    q.bindValue(":catId", gasto.categoriaId);
-    q.bindValue(":id",    gasto.id);
-    if (!q.exec()) {
-        qDebug() << "atualizarGastoFixo:" << q.lastError().text();
-        return false;
-    }
+    q.prepare("UPDATE gastos_fixos SET historico=:h,valor_centavos=:v,data=:d,categoria_id=:c"
+              " WHERE id=:id");
+    q.bindValue(":h",  gasto.historico);
+    q.bindValue(":v",  gasto.valorCentavos);
+    q.bindValue(":d",  gasto.data.toString("yyyy-MM-dd"));
+    q.bindValue(":c",  gasto.categoriaId);
+    q.bindValue(":id", gasto.id);
+    if (!q.exec()) { qDebug() << "atualizarGastoFixo:" << q.lastError().text(); return false; }
+    salvarEEncriptar();
     return true;
 }
 
 bool DatabaseManager::removerGastoFixo(int id)
 {
     QSqlQuery q(m_db);
-    q.prepare("DELETE FROM gastos_fixos WHERE id = :id");
+    q.prepare("DELETE FROM gastos_fixos WHERE id=:id");
     q.bindValue(":id", id);
-    if (!q.exec()) {
-        qDebug() << "removerGastoFixo:" << q.lastError().text();
-        return false;
-    }
+    if (!q.exec()) { qDebug() << "removerGastoFixo:" << q.lastError().text(); return false; }
+    salvarEEncriptar();
     return true;
 }
 
 qint64 DatabaseManager::totalGastosFixos()
 {
     QSqlQuery q(m_db);
-    q.exec("SELECT COALESCE(SUM(valor_centavos), 0) FROM gastos_fixos");
+    q.exec("SELECT COALESCE(SUM(valor_centavos),0) FROM gastos_fixos");
     return q.next() ? q.value(0).toLongLong() : 0;
 }
 
@@ -323,7 +393,7 @@ QList<GastoVariavel> DatabaseManager::listarGastosVariaveis()
         g.id            = q.value(0).toInt();
         g.historico     = q.value(1).toString();
         g.valorCentavos = q.value(2).toLongLong();
-        g.data          = q.value(3).toDate();
+        g.data          = QDate::fromString(q.value(3).toString(), "yyyy-MM-dd");
         g.categoriaId   = q.value(4).toInt();
         g.categoriaNome = q.value(5).toString();
         lista.append(g);
@@ -334,57 +404,46 @@ QList<GastoVariavel> DatabaseManager::listarGastosVariaveis()
 bool DatabaseManager::inserirGastoVariavel(GastoVariavel &gasto)
 {
     QSqlQuery q(m_db);
-    q.prepare(
-        "INSERT INTO gastos_variaveis (historico, valor_centavos, data, categoria_id)"
-        " VALUES (:hist, :valor, :data, :catId)"
-    );
-    q.bindValue(":hist",  gasto.historico);
-    q.bindValue(":valor", gasto.valorCentavos);
-    q.bindValue(":data",  gasto.data.toString("yyyy-MM-dd"));
-    q.bindValue(":catId", gasto.categoriaId);
-    if (!q.exec()) {
-        qDebug() << "inserirGastoVariavel:" << q.lastError().text();
-        return false;
-    }
+    q.prepare("INSERT INTO gastos_variaveis (historico,valor_centavos,data,categoria_id)"
+              " VALUES (:h,:v,:d,:c)");
+    q.bindValue(":h", gasto.historico);
+    q.bindValue(":v", gasto.valorCentavos);
+    q.bindValue(":d", gasto.data.toString("yyyy-MM-dd"));
+    q.bindValue(":c", gasto.categoriaId);
+    if (!q.exec()) { qDebug() << "inserirGastoVariavel:" << q.lastError().text(); return false; }
     gasto.id = q.lastInsertId().toInt();
+    salvarEEncriptar();
     return true;
 }
 
 bool DatabaseManager::atualizarGastoVariavel(const GastoVariavel &gasto)
 {
     QSqlQuery q(m_db);
-    q.prepare(
-        "UPDATE gastos_variaveis"
-        " SET historico = :hist, valor_centavos = :valor, data = :data, categoria_id = :catId"
-        " WHERE id = :id"
-    );
-    q.bindValue(":hist",  gasto.historico);
-    q.bindValue(":valor", gasto.valorCentavos);
-    q.bindValue(":data",  gasto.data.toString("yyyy-MM-dd"));
-    q.bindValue(":catId", gasto.categoriaId);
-    q.bindValue(":id",    gasto.id);
-    if (!q.exec()) {
-        qDebug() << "atualizarGastoVariavel:" << q.lastError().text();
-        return false;
-    }
+    q.prepare("UPDATE gastos_variaveis SET historico=:h,valor_centavos=:v,data=:d,categoria_id=:c"
+              " WHERE id=:id");
+    q.bindValue(":h",  gasto.historico);
+    q.bindValue(":v",  gasto.valorCentavos);
+    q.bindValue(":d",  gasto.data.toString("yyyy-MM-dd"));
+    q.bindValue(":c",  gasto.categoriaId);
+    q.bindValue(":id", gasto.id);
+    if (!q.exec()) { qDebug() << "atualizarGastoVariavel:" << q.lastError().text(); return false; }
+    salvarEEncriptar();
     return true;
 }
 
 bool DatabaseManager::removerGastoVariavel(int id)
 {
     QSqlQuery q(m_db);
-    q.prepare("DELETE FROM gastos_variaveis WHERE id = :id");
+    q.prepare("DELETE FROM gastos_variaveis WHERE id=:id");
     q.bindValue(":id", id);
-    if (!q.exec()) {
-        qDebug() << "removerGastoVariavel:" << q.lastError().text();
-        return false;
-    }
+    if (!q.exec()) { qDebug() << "removerGastoVariavel:" << q.lastError().text(); return false; }
+    salvarEEncriptar();
     return true;
 }
 
 qint64 DatabaseManager::totalGastosVariaveis()
 {
     QSqlQuery q(m_db);
-    q.exec("SELECT COALESCE(SUM(valor_centavos), 0) FROM gastos_variaveis");
+    q.exec("SELECT COALESCE(SUM(valor_centavos),0) FROM gastos_variaveis");
     return q.next() ? q.value(0).toLongLong() : 0;
 }

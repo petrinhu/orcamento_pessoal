@@ -13,14 +13,8 @@ class PasswordDialog : public QDialog
 public:
     explicit PasswordDialog(QWidget *parent = nullptr);
 
-    QString host()     const;
-    int     porta()    const;
-    QString banco()    const;
-    QString usuario()  const;
-    QString senha()    const;
-
-private slots:
-    void onSenhaChanged(const QString &senha);
+    QString nome()  const;
+    QString senha() const;
 
 private:
     struct Requisito {
@@ -28,22 +22,17 @@ private:
         bool    ok = false;
     };
 
-    void atualizarRequisito(Requisito &req, bool ok);
-    int  calcularForca(const QString &senha) const; // 0–4
+    void onSenhaChanged(const QString &senha);
+    void atualizarRequisito(Requisito &req, bool ok, bool ativo);
+    void atualizarBotao();
+    int  calcularForca(const QString &senha) const; // 0–5
 
-    // Conexão MySQL
-    QLineEdit *m_host;
-    QLineEdit *m_porta;
-    QLineEdit *m_banco;
-    QLineEdit *m_usuario;
-
-    // Senha
-    QLineEdit   *m_senha;
-    QPushButton *m_btnMostrar;
+    QLineEdit    *m_nome;
+    QLineEdit    *m_senha;
+    QPushButton  *m_btnMostrar;
     QProgressBar *m_barraForca;
     QLabel       *m_labelForca;
 
-    // Requisitos
     Requisito m_reqTamanho;
     Requisito m_reqMaiuscula;
     Requisito m_reqMinuscula;

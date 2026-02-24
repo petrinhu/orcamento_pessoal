@@ -22,4 +22,7 @@ QByteArray decrypt(const QByteArray &ciphertext,
                    const QByteArray &key,
                    const QByteArray &iv);
 
+// Gera salt aleatório criptograficamente seguro
+QByteArray gerarSalt();
+
 } // namespace CryptoHelper

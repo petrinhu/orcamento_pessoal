@@ -21,10 +21,7 @@ int main(int argc, char *argv[])
             return 0;
 
         const bool ok = DatabaseManager::instance().conectar(
-            dlg.host(),
-            dlg.porta(),
-            dlg.banco(),
-            dlg.usuario(),
+            dlg.nome(),
             dlg.senha()
         );
 
@@ -32,9 +29,9 @@ int main(int argc, char *argv[])
 
         QMessageBox::critical(
             nullptr,
-            "Falha na conexão",
-            "Não foi possível conectar ao banco de dados.\n\n"
-            "Verifique host, porta, banco, usuário e senha e tente novamente."
+            "Falha ao abrir dados",
+            "Não foi possível abrir os dados do usuário \"" + dlg.nome() + "\".\n\n"
+            "Senha incorreta ou arquivo corrompido."
         );
     }
 

@@ -66,4 +66,11 @@ QByteArray decrypt(const QByteArray &ciphertext,
     return plaintext;
 }
 
+QByteArray gerarSalt()
+{
+    QByteArray salt(SALT_LENGTH, 0);
+    RAND_bytes(reinterpret_cast<unsigned char*>(salt.data()), SALT_LENGTH);
+    return salt;
+}
+
 } // namespace CryptoHelper
