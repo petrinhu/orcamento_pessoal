@@ -1,5 +1,11 @@
 # Orçamento Pessoal
 
+[![Build](https://github.com/petrinhu/orcamento_pessoal/actions/workflows/build.yml/badge.svg)](https://github.com/petrinhu/orcamento_pessoal/actions/workflows/build.yml)
+![Linux](https://img.shields.io/badge/Linux-FCC624?style=flat&logo=linux&logoColor=black)
+![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?style=flat&logo=c%2B%2B&logoColor=white)
+![Qt6](https://img.shields.io/badge/Qt-6-41CD52?style=flat&logo=qt&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-yellow?style=flat)
+
 App de controle de orçamento pessoal em C++20/Qt6/SQLite para Linux (Fedora/KDE Plasma).
 
 ## Funcionalidades
