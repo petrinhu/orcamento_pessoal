@@ -8,7 +8,7 @@
 #include <QList>
 #include <QSqlDatabase>
 #include <QString>
-#include <QtTypes>
+#include <QtGlobal>
 
 class DatabaseManager
 {

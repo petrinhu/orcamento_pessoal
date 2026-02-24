@@ -3,7 +3,7 @@
 #include <QLabel>
 #include <QWidget>
 #include <QtCharts/QChartView>
-#include <QtTypes>
+#include <QtGlobal>
 
 class DashboardWidget : public QWidget
 {

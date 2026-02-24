@@ -2,7 +2,7 @@
 
 #include <QDate>
 #include <QString>
-#include <QtTypes>
+#include <QtGlobal>
 
 struct Entrada {
     int     id            = 0;
