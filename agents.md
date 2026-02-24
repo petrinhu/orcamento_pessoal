@@ -4,17 +4,19 @@
 
 ### CryptoHelper (`src/core/`)
 - Namespace com funções puras (sem estado)
+- `gerarSalt() → QByteArray` — salt aleatório via `RAND_bytes`
 - `derivarChaveEIV(salt, senha, chave, iv) → bool` — PBKDF2-SHA256, 600k iterações
 - `encrypt(plaintext, key, iv) → QByteArray` — AES-256-CBC
 - `decrypt(ciphertext, key, iv) → QByteArray` — AES-256-CBC
 
 ### DatabaseManager (`src/core/`)
 - Singleton — `DatabaseManager::instance()`
-- `conectar(host, porta, banco, usuario, senha) → bool`
-- `criarEsquema() → bool` — CREATE TABLE IF NOT EXISTS + semeadura de categorias
+- `conectar(nome, senha) → bool` — slug → `.enc` → decripta → SQLite abre `.db` temp
+- `criarEsquema() → bool` — `CREATE TABLE IF NOT EXISTS` + semeadura de categorias
 - CRUD completo: Categoria, Entrada, GastoFixo, GastoVariavel
-- Totais via `SUM` no banco (O(1))
+- Totais via `COALESCE(SUM(...), 0)` no banco (O(1))
 - Listas via JOIN único (sem N+1)
+- `PRAGMA journal_mode = MEMORY` · `PRAGMA foreign_keys = ON`
 
 ## Models (`src/models/`)
 
@@ -36,9 +38,9 @@ Structs POD sem métodos:
 - `aplicar()` — aplica tudo + listener de mudança de tema
 
 ### PasswordDialog
-- Campos: host, porta, banco, usuário, senha
-- Barra de força de senha (4 níveis, cor progressiva)
-- Botão "Conectar" condicional
+- Campos: nome de usuário + senha
+- Checklist visual de requisitos (✓/✗ em tempo real)
+- Botão "Entrar" habilitado apenas com todos os requisitos atendidos
 
 ### MainWindow
 - Orquestra 5 abas via `QTabWidget`
@@ -74,7 +76,8 @@ main()
   Theme::aplicar()
   loop:
     PasswordDialog.exec()
-    DatabaseManager::conectar()  →  criarEsquema()
+    DatabaseManager::conectar(nome, senha)  →  criarEsquema()
   MainWindow.show()
   app.exec()
+  [encerramento: encrypt .db → .enc → delete .db]
 ```

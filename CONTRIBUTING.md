@@ -6,8 +6,9 @@ Projeto pessoal — contribuições externas não são esperadas, mas são bem-v
 
 ```bash
 sudo dnf install \
-  qt6-qtbase-devel qt6-qtcharts-devel qt6-qtbase-mysql \
-  mysql-devel openssl-devel gcc-c++ cmake make -y
+  qt6-qtbase-devel qt6-qtcharts-devel \
+  openssl-devel gcc-c++ cmake make -y
+# qt6-qtbase-mysql e mysql-devel NÃO são necessários
 ```
 
 ## Build de desenvolvimento

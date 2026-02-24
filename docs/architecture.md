@@ -29,10 +29,17 @@ Arquitetura em camadas com separação clara de responsabilidades:
 main()
   └─ Theme::aplicar()           # fontes Inter + QSS + listener sistema
   └─ PasswordDialog (loop)
-       └─ DatabaseManager::conectar()
-            └─ criarEsquema()   # CREATE TABLE IF NOT EXISTS
+       └─ DatabaseManager::conectar(nome, senha)
+            └─ CryptoHelper::decrypt()   # AES-256-CBC: .enc → .db temp
+            └─ QSqlDatabase::open()      # SQLite no .db temporário
+            └─ criarEsquema()            # CREATE TABLE IF NOT EXISTS
             └─ semear categorias padrão (se vazio)
   └─ MainWindow::show()
+  └─ [ao fechar]
+       └─ QSqlDatabase::close()
+       └─ CryptoHelper::encrypt()        # AES-256-CBC: .db → .enc
+       └─ escrita atômica (.new → rename → remove old)
+       └─ QFile::remove(.db temporário)
 ```
 
 ## Camada UI
@@ -49,9 +56,10 @@ main()
 - Conecta `categoriasAlteradas()` do `ConfigWidget` ao `recarregarCategorias()` dos widgets de gastos
 
 ### PasswordDialog
-- Coleta credenciais MySQL (host, porta, banco, usuário, senha)
-- Valida força da senha em tempo real (barra progressiva 4 níveis)
-- Botão "Conectar" habilitado apenas com todos os requisitos atendidos
+- Coleta nome de usuário e senha
+- Nome determina o arquivo `data/<slug>.enc` a ser carregado
+- Checklist visual de requisitos de senha (✓/✗ em tempo real)
+- Botão "Entrar" habilitado apenas com todos os requisitos atendidos
 
 ### Widgets de dados (Entradas, GastosFixos, GastosVariaveis)
 - `m_carregando: bool` — flag que bloqueia `itemChanged` durante load/reformatação
@@ -68,18 +76,21 @@ main()
 ## Camada Core
 
 ### DatabaseManager (Singleton)
-- Uma instância por processo via `static` local
-- Conexão: `QSqlDatabase::addDatabase("QMYSQL")`
+- Uma instância por processo via `static` local em `instance()`
+- `conectar(nome, senha)` — deriva slug, localiza `.enc`, decripta, abre `.db` temporário
+- `PRAGMA journal_mode = MEMORY` — sem arquivos de journal em disco
+- `PRAGMA foreign_keys = ON` — integridade referencial ativa
 - `criarEsquema()` chamado automaticamente após `conectar()`
 - Totais via `COALESCE(SUM(...), 0)` — O(1) no banco, sem carregar registros
 - Listas via `JOIN` em uma única query — sem N+1 queries
 - Todos os valores com `bindValue` — sem risco de SQL injection
 
 ### CryptoHelper (namespace)
-- Funções puras sem estado: `encrypt`, `decrypt`, `derivarChaveEIV`
+- Funções puras sem estado: `encrypt`, `decrypt`, `derivarChaveEIV`, `gerarSalt`
 - AES-256-CBC via OpenSSL EVP
-- PBKDF2-SHA256 com 600.000 iterações (NIST recomenda ≥ 600k para 2026)
-- Disponível para uso futuro (ex: exportação criptografada)
+- PBKDF2-SHA256 com 600.000 iterações (NIST SP 800-132, 2026)
+- Salt aleatório via `RAND_bytes` — gerado a cada escrita
+- Escrita atômica: arquivo `.new` → `rename` → remove antigo
 
 ## Camada Models
 

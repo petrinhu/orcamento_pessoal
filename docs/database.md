@@ -1,18 +1,33 @@
 # Banco de Dados — Orçamento Pessoal
 
-## Configuração inicial
+## Visão geral
 
-```sql
-CREATE DATABASE orcamento
-  CHARACTER SET utf8mb4
-  COLLATE utf8mb4_unicode_ci;
+O banco de dados é um arquivo SQLite criptografado com AES-256-CBC. Nenhum servidor de banco de dados é necessário.
 
-CREATE USER 'orcamento'@'localhost' IDENTIFIED BY 'sua_senha';
-GRANT ALL PRIVILEGES ON orcamento.* TO 'orcamento'@'localhost';
-FLUSH PRIVILEGES;
+```
+data/
+  <usuario>.enc      # banco SQLite criptografado (AES-256-CBC)
+  .<usuario>.db      # arquivo temporário em uso — deletado ao fechar
 ```
 
 O app cria as tabelas automaticamente na primeira execução (`CREATE TABLE IF NOT EXISTS`).
+
+## Fluxo de criptografia
+
+**Login:**
+1. Nome → slug → `data/<slug>.enc`
+2. PBKDF2-SHA256 (600k iter.) deriva chave + IV da senha e do salt embarcado no arquivo
+3. AES-256-CBC decripta `.enc` → `.db` temporário
+4. SQLite abre o `.db`
+
+**Encerramento:**
+1. SQLite fecha o `.db`
+2. AES-256-CBC encripta `.db` → `.enc` (escrita atômica: `.new` → rename → remove old)
+3. `.db` temporário é deletado
+
+## Configuração
+
+Nenhuma. O arquivo `.enc` é criado automaticamente na primeira execução.
 
 ## Esquema
 
@@ -20,9 +35,9 @@ O app cria as tabelas automaticamente na primeira execução (`CREATE TABLE IF N
 
 ```sql
 CREATE TABLE categorias (
-  id   INT AUTO_INCREMENT PRIMARY KEY,
-  nome VARCHAR(100) NOT NULL UNIQUE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  id   INTEGER PRIMARY KEY AUTOINCREMENT,
+  nome TEXT NOT NULL UNIQUE
+);
 ```
 
 Categorias padrão semeadas na primeira execução:
@@ -33,37 +48,37 @@ Categorias padrão semeadas na primeira execução:
 
 ```sql
 CREATE TABLE entradas (
-  id             INT AUTO_INCREMENT PRIMARY KEY,
-  origem         VARCHAR(200) NOT NULL DEFAULT '',
-  valor_centavos BIGINT       NOT NULL DEFAULT 0,
-  data           DATE         NOT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  origem         TEXT    NOT NULL DEFAULT '',
+  valor_centavos INTEGER NOT NULL DEFAULT 0,
+  data           TEXT    NOT NULL
+);
 ```
 
 ### gastos_fixos
 
 ```sql
 CREATE TABLE gastos_fixos (
-  id             INT AUTO_INCREMENT PRIMARY KEY,
-  historico      VARCHAR(200) NOT NULL DEFAULT '',
-  valor_centavos BIGINT       NOT NULL DEFAULT 0,
-  data           DATE         NOT NULL,
-  categoria_id   INT          NOT NULL,
-  FOREIGN KEY (categoria_id) REFERENCES categorias(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  historico      TEXT    NOT NULL DEFAULT '',
+  valor_centavos INTEGER NOT NULL DEFAULT 0,
+  data           TEXT    NOT NULL,
+  categoria_id   INTEGER NOT NULL,
+  FOREIGN KEY (categoria_id) REFERENCES categorias(id) ON DELETE CASCADE
+);
 ```
 
 ### gastos_variaveis
 
 ```sql
 CREATE TABLE gastos_variaveis (
-  id             INT AUTO_INCREMENT PRIMARY KEY,
-  historico      VARCHAR(200) NOT NULL DEFAULT '',
-  valor_centavos BIGINT       NOT NULL DEFAULT 0,
-  data           DATE         NOT NULL,
-  categoria_id   INT          NOT NULL,
-  FOREIGN KEY (categoria_id) REFERENCES categorias(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  historico      TEXT    NOT NULL DEFAULT '',
+  valor_centavos INTEGER NOT NULL DEFAULT 0,
+  data           TEXT    NOT NULL,
+  categoria_id   INTEGER NOT NULL,
+  FOREIGN KEY (categoria_id) REFERENCES categorias(id) ON DELETE CASCADE
+);
 ```
 
 ## Diagrama ER
@@ -73,24 +88,26 @@ categorias
   id (PK)
   nome
 
-entradas                gastos_fixos            gastos_variaveis
-  id (PK)                 id (PK)                 id (PK)
-  origem                  historico               historico
-  valor_centavos          valor_centavos          valor_centavos
-  data                    data                    data
-                          categoria_id (FK) ──┐   categoria_id (FK) ──┘
-                                              └── categorias.id
+entradas                gastos_fixos              gastos_variaveis
+  id (PK)                 id (PK)                   id (PK)
+  origem                  historico                 historico
+  valor_centavos          valor_centavos            valor_centavos
+  data                    data                      data
+                          categoria_id (FK) ──┐     categoria_id (FK) ──┘
+                                              └─── categorias.id
 ```
 
 ## Decisões de design
 
 | Decisão | Motivo |
 |---|---|
-| `BIGINT` para valores | Sem risco de overflow; centavos de transações do dia a dia cabem em `INT`, mas `BIGINT` é mais seguro |
-| `ENGINE=InnoDB` | Suporte a FK com integridade referencial |
-| `utf8mb4` | Suporte completo a Unicode (emojis, acentos) |
+| SQLite + AES-256-CBC | App standalone; sem servidor; portátil entre máquinas |
+| `INTEGER` para valores | SQLite usa `INTEGER` — mapeado para `qint64` no Qt |
+| `TEXT` para datas | SQLite não tem tipo DATE nativo; formato `yyyy-MM-dd` |
+| `FOREIGN KEY ... ON DELETE CASCADE` | Remoção de categoria cascateia para gastos vinculados |
 | `UNIQUE` em `categorias.nome` | Evita duplicatas no nível do banco |
-| FK sem `ON DELETE CASCADE` explícito | A remoção de categoria via app avisa o usuário; o MySQL recusa a remoção se houver gastos vinculados — proteção de dados |
+| `PRAGMA journal_mode = MEMORY` | Sem arquivos de journal em disco |
+| `PRAGMA foreign_keys = ON` | Integridade referencial ativa (desligada por padrão no SQLite) |
 
 ## Queries principais
 

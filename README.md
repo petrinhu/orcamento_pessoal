@@ -1,14 +1,15 @@
 # Orçamento Pessoal
 
-App de controle de orçamento pessoal em C++20/Qt6/MySQL para Linux (Fedora/KDE Plasma).
+App de controle de orçamento pessoal em C++20/Qt6/SQLite para Linux (Fedora/KDE Plasma).
 
 ## Funcionalidades
 
 - **Dashboard** — cards de resumo (entradas, gastos fixos, gastos variáveis, saldo) e gráfico donut interativo
-- **Entradas** — tabela editável com persistência automática no MySQL
+- **Entradas** — tabela editável com persistência automática
 - **Gastos Fixos** — tabela com categorias e botão "Repetir mês anterior"
 - **Gastos Variáveis** — tabela com categorias
 - **Configurações** — gerenciamento de categorias compartilhadas
+- **Banco criptografado** — SQLite + AES-256-CBC por arquivo; sem servidor externo
 - **Tema automático** — light/dark seguindo o sistema (KDE Plasma)
 - **Fonte Inter** — embutida no binário
 
@@ -18,7 +19,7 @@ App de controle de orçamento pessoal em C++20/Qt6/MySQL para Linux (Fedora/KDE 
 |---|---|
 | Linguagem | C++20 |
 | UI | Qt6 Widgets + Charts |
-| Banco de dados | MySQL via Qt6::Sql |
+| Banco de dados | SQLite via QSQLITE (built-in no Qt6) |
 | Criptografia | OpenSSL — AES-256-CBC, PBKDF2-SHA256 (600k iter.) |
 | Build | CMake 3.16+ |
 | Plataforma | Fedora 43 / KDE Plasma |
@@ -29,10 +30,9 @@ App de controle de orçamento pessoal em C++20/Qt6/MySQL para Linux (Fedora/KDE 
 sudo dnf install \
   qt6-qtbase-devel \
   qt6-qtcharts-devel \
-  qt6-qtbase-mysql \
-  mysql-devel \
   openssl-devel \
   gcc-c++ cmake make -y
+# qt6-qtbase-mysql e mysql-devel NÃO são necessários
 ```
 
 ## Build
@@ -45,16 +45,11 @@ cmake --build build -j$(nproc)
 
 ## Banco de dados
 
-Crie o banco antes de executar:
+Nenhuma configuração prévia necessária. Na primeira execução o app solicita nome de usuário e senha — o banco SQLite é criado e criptografado automaticamente em `data/<usuario>.enc`.
 
-```sql
-CREATE DATABASE orcamento CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER 'orcamento'@'localhost' IDENTIFIED BY 'sua_senha';
-GRANT ALL PRIVILEGES ON orcamento.* TO 'orcamento'@'localhost';
-FLUSH PRIVILEGES;
-```
-
-O esquema (tabelas) é criado automaticamente pelo app na primeira execução.
+- O arquivo `.enc` é portátil e pode ser copiado entre máquinas
+- A senha é derivada via PBKDF2 (600k iterações) para cifrar o banco com AES-256-CBC
+- Nenhum servidor de banco de dados é necessário
 
 ## Estrutura
 
@@ -62,17 +57,17 @@ O esquema (tabelas) é criado automaticamente pelo app na primeira execução.
 src/
   main.cpp
   core/
-    CryptoHelper.h/cpp       # AES-256-CBC, PBKDF2-SHA256
-    DatabaseManager.h/cpp    # Conexão MySQL + CRUD
+    CryptoHelper.h/cpp       # AES-256-CBC, PBKDF2-SHA256, gerarSalt()
+    DatabaseManager.h/cpp    # SQLite+AES — conectar(nome,senha), CRUD
   models/
     Categoria.h/cpp
     Entrada.h/cpp
     GastoFixo.h/cpp
     GastoVariavel.h/cpp
   ui/
-    Theme.h/cpp              # Paleta, QSS, Inter, light/dark
+    Theme.h/cpp              # Paleta Forest Neutral, QSS, Inter, light/dark
     MainWindow.h/cpp
-    PasswordDialog.h/cpp
+    PasswordDialog.h/cpp     # Splash: nome + senha + checklist ✓/✗
     DashboardWidget.h/cpp
     EntradasWidget.h/cpp
     GastosFixosWidget.h/cpp
@@ -83,6 +78,8 @@ src/
 resources/
   fonts/                     # Inter Regular, Medium, SemiBold (embutidas)
   resources.qrc
+data/                        # criado em runtime — NÃO versionar
+  <usuario>.enc              # banco SQLite criptografado
 docs/
   architecture.md
   database.md
