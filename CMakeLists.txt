@@ -8,36 +8,38 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Charts)
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets Charts Sql)
+find_package(OpenSSL REQUIRED)
 
 qt_add_executable(orcamento-pessoal
-    main.cpp
+    resources/resources.qrc
+    src/main.cpp
+    src/core/CryptoHelper.cpp
+    src/core/DatabaseManager.cpp
+    src/models/Categoria.cpp
+    src/models/Entrada.cpp
+    src/models/GastoFixo.cpp
+    src/models/GastoVariavel.cpp
+    src/ui/Theme.cpp
+    src/ui/ConfigWidget.cpp
+    src/ui/DashboardWidget.cpp
+    src/ui/EntradasWidget.cpp
+    src/ui/GastosFixosWidget.cpp
+    src/ui/GastosVariaveisWidget.cpp
+    src/ui/MainWindow.cpp
+    src/ui/PasswordDialog.cpp
+    src/utils/CurrencyUtils.cpp
 )
 
-target_link_libraries(orcamento-pessoal PRIVATE Qt6::Core Qt6::Widgets Qt6::Charts)
-
-# Otimizações para seu hardware
-target_compile_options(orcamento-pessoal PRIVATE -march=native -O2)
-
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Charts)
-
-# Adiciona OpenSSL
-find_package(OpenSSL REQUIRED)
-if(OpenSSL_FOUND)
-    message(STATUS "OpenSSL encontrado: ${OPENSSL_VERSION}")
-else()
-    message(FATAL_ERROR "OpenSSL não encontrado! Instale com: sudo dnf install openssl-devel")
-endif()
-
-# ... seu qt_add_executable ...
+target_include_directories(orcamento-pessoal PRIVATE src)
 
 target_link_libraries(orcamento-pessoal PRIVATE
     Qt6::Core
     Qt6::Widgets
     Qt6::Charts
+    Qt6::Sql
     OpenSSL::SSL
     OpenSSL::Crypto
 )
 
-# Otimizações (já tem -march=native)
 target_compile_options(orcamento-pessoal PRIVATE -march=native -O2 -Wall)
